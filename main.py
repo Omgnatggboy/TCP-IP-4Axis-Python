@@ -110,7 +110,7 @@ def ClearRobotError(dashboard: DobotApiDashboard):
       globalLockValue.release()
       sleep(5)
        
-if __name__ == '__main__':
+#if __name__ == '__main__':
     dashboard, move, feed = ConnectRobot()
     print("开始使能...")
     dashboard.EnableRobot()
