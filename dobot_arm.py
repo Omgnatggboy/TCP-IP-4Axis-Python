@@ -46,9 +46,9 @@ class Robot1Tester:
         
         # --- ขั้นตอนการหยิบ (Sucking/Gripping) ---
         print("Action: Sucking Item...")
-        self.dashboard.DO(9, 1) # สั่งเปิดลมดูดที่ DO9
+        self.dashboard.ToolDO(9, 1) # สั่งเปิดลมดูดที่ DO9
         time.sleep(1.5)             # เพิ่มเวลาให้ลมดูดทำงานเต็มที่ (ห้ามสั่ง DO OFF ทันที)
-        self.dashboard.DO(9, 0) 
+        self.dashboard.ToolDO(9, 0) 
         time.sleep(1.5) 
         # 3. ยกขึ้น (สถานะ DO9 ต้องยังคงเป็น 1)
         self.move.MovL(x, y, z + 50, r)
