@@ -5,43 +5,34 @@ import numpy as np
 import threading
 import paho.mqtt.client as mqtt
 from dobot_api import DobotApiDashboard, DobotApiMove, DobotApi, MyType
-from time import sleep
-
-current_actual = None
-globalLockValue = threading.Lock()
 
 # =============================================================================
 # Configuration
 # =============================================================================
-DB1_IP = "192.168.2.7"
-DB2_IP = "192.168.2.6"   
+DB2_IP = "192.168.2.7"  
 
 BROKER_URL    = "7301c4eb07c44d2ca436d360c487bcf8.s1.eu.hivemq.cloud"
 TOPIC_JOINTS  = "dobot/mg400/joints"
 
 # --- DO Port ---
-DO_SUCTION_ON  = 9  
-DO_SUCTION_OFF = 10   
-D0_CONVEYOR   = 2  
+DO_SUCTION_ON  = 9    # สั่งดูด  (เปิดลม/แม่เหล็กไฟฟ้า)
+DO_SUCTION_OFF = 10   # สั่งปล่อย (blow-off)
 
 # --- Timing ---
-SUCTION_ENGAGE_DELAY  = 1.5   
-SUCTION_RELEASE_DELAY = 3.0  
-CONVEYER_DELAY        = 2.0   
-MQTT_INTERVAL         = 0.1  
+SUCTION_ENGAGE_DELAY  = 1.5   # วินาที รอให้สุญญากาศสร้างแรงดูด
+SUCTION_RELEASE_DELAY = 3.0   # วินาที รอให้ชิ้นงานหล่นลง
+MQTT_INTERVAL         = 0.1   # วินาที ส่งข้อมูล joint ที่ 10 Hz
 
-# ----- DB1 (แขนกล ตัวที่ 1) -----
-DB1_HOME_POINT      = [189.79,   182.00,  98.86,  51.42]   
-DB1_PICK_POINT      = [191.52,   295.58,  -48.23,  130.47]    
-DB1_CONVEYOR_POINT  = [352.70,   18.94,  90.53,  88.25]   
-DB1_WASTE_POINT     = [2.60,   -294.58,  -20.21,  9.38]  
 
+# =============================================================================
+# Waypoint Definitions  (Joint Space: J1, J2, J3, J4  หน่วย: องศา)
+# =============================================================================
 # ----- DB2 (แขนกล ตัวที่ 2) -----
-DB2_HOME_POINT      = [136.71,   89.21,  213.41,  -49.08]   
-DB2_PICK_POINT      = [292.55,   167.70,  37.56,  -45.70]   
-DB2_CONVEYOR_POINT  = [-51.48,   -1.44,  204.01, -81.94]   
-DB2_WASTE_POINT     = [2.60,   -294.58,  -20.21,  9.38]    
-   
+DB2_HOME_POINT      = [189.79,   182.00,  98.86,  51.42]   # ← ใส่ค่า J1–J4 จริง
+DB2_PICK_POINT      = [191.52,   295.58,  -48.23,  130.47]    # ← ใส่ค่า J1–J4 จริง
+DB2_CONVEYOR_POINT  = [356.07,   -49.89, 165.05,  -5.02]   # ← ใส่ค่า J1–J4 จริง
+DB2_WASTE_POINT     = [2.60,   -294.58,  -20.21,  9.38]   # ← ใส่ค่า J1–J4 จริง
+
 
 # =============================================================================
 # RobotController
@@ -102,51 +93,59 @@ class RobotController:
         self.dashboard.DO(index, status)
 
     def suction_pick(self):
+        """เปิดดูด แล้วรอให้สุญญากาศสร้างแรงดูด"""
         self._do_set(DO_SUCTION_ON, 1)
         time.sleep(SUCTION_ENGAGE_DELAY)
         self._do_set(DO_SUCTION_ON,  0)
 
     def suction_release(self):
-        self._do_set(DO_SUCTION_OFF, 1)   
+        """ปิดดูด + blow-off แล้วรอให้ชิ้นงานหล่น"""
+        self._do_set(DO_SUCTION_OFF, 1)   # เป่าออก
         time.sleep(SUCTION_RELEASE_DELAY)
-        self._do_set(DO_SUCTION_OFF, 0)   
-    
-    def conveyor_place(self):
-        self._do_set(D0_CONVEYOR, 1)
-        time.sleep(CONVEYER_DELAY)
-        self._do_set(D0_CONVEYOR, 0)
+        self._do_set(DO_SUCTION_OFF, 0)   # หยุดเป่า
 
     # ------------------------------------------------------------------
-    # Motion 
+    # Motion  (MovJ — joint space, ไม่มีปัญหา IK no-solution)
     # ------------------------------------------------------------------
-    def _movj(self, point: list):
+    def _movj(self, point: list, description: str = ""):
+        """MovJ ไปยัง joint point [J1, J2, J3, J4] พร้อม log"""
         j1, j2, j3, j4 = point
+        print(f"  🦾 [{self.label}] MovJ → {description}  {point}")
         self.move.MovJ(j1, j2, j3, j4)
 
-    def _movl(self, point: list):
-        j1, j2, j3, j4 = point
-        self.move.MovL(j1, j2, j3, j4)
-
     def pick_and_place(self, to_conveyor: bool):
-        target = self.conveyor_point if to_conveyor else self.waste_point
-        dest   = "Conveyor ✅" if to_conveyor else "Waste ❌"
+        """
+        3-Step Pick-and-Place (Joint Space)
+
+        ┌─ Step 1: Pick ─────────────────────────────────────────────┐
+        │   Home  →  Pick Point  →  ดูด  →  Home                    │
+        ├─ Step 2: Transit ──────────────────────────────────────────┤
+        │   (แขนอยู่ที่ Home แล้ว พร้อมเคลื่อนไปฝั่งปลายทาง)        │
+        ├─ Step 3: Place ─────────────────────────────────────────────┤
+        │   Home  →  Drop Point  →  ปล่อย  →  Home                  │
+        └─────────────────────────────────────────────────────────────┘
+        """
+        target = self.conveyor_point
+        dest   = "Conveyor ✅" 
+        print(f"\n📦 [{self.label}] pick_and_place → {dest}")
 
         # ── Step 1: Pick ──────────────────────────────────────────────
-        self._movl(self.home_point)
-     # รอจนกว่าจะถึงจุด Home อย่างน้อย 1 รอบก่อนเข้าหยิบ
-        self._movl(self.pick_point)
-        # รอจนกว่าจะถึงจุด Pick อย่างน้อย 1 รอบก่อนสั่งดูด
-        self.suction_pick()                      
+        print(f"  [Step 1] Pick")
+        self._movj(self.home_point,  "Home       (ยกแขนขึ้น ก่อนเข้าหยิบ)")
+        self._movj(self.pick_point,  "Pick Point (ลงแตะชิ้นงาน)")
+        self.suction_pick()                       # ดูดชิ้นงาน
 
         # ── Step 2: Transit ───────────────────────────────────────────
-        self._movj(self.home_point)
-      # รอจนกว่าจะถึงจุด Home อย่างน้อย 1 รอบก่อนเคลื่อนที่ไปวาง
+        print(f"  [Step 2] Transit")
+        self._movj(self.home_point,  "Home       (ยกแขนขึ้น พร้อมเคลื่อนย้าย)")
 
         # ── Step 3: Place ─────────────────────────────────────────────
-        self._movl(target)         # รอจนกว่าจะถึงจุดวางอย่างน้อย 1 รอบก่อนปล่อย
-        self.suction_release()
-        self.conveyor_place()                       
-        self._movj(self.home_point)
+        print(f"  [Step 3] Place → {dest}")
+        self._movj(target,           f"Drop Point ({dest})")
+        self.suction_release()                    # ปล่อยชิ้นงาน
+        self._movj(self.home_point,  "Home       (ยกแขนขึ้น เสร็จสิ้น)")
+        
+
 
 # =============================================================================
 # MQTT
@@ -171,36 +170,12 @@ def make_mqtt_worker(robot: RobotController, robot_key: str):
             time.sleep(MQTT_INTERVAL)
     return worker
 
-def WaitArrive(point_list):
-    while True:
-        is_arrive = True
-        globalLockValue.acquire()
-        if current_actual is not None:
-            for index in range(4):
-                if (abs(current_actual[index] - point_list[index]) > 1):
-                    is_arrive = False
-            if is_arrive :
-                globalLockValue.release()
-                return
-        globalLockValue.release()  
-        sleep(0.001)
-
 # =============================================================================
 # Entry Point  (ใช้งาน DB1 ตัวเดียว — DB2 พร้อมเปิดใช้เมื่อแก้การเชื่อมต่อได้แล้ว)
 # =============================================================================
 if __name__ == "__main__":
 
-    # --- Init DB1 ---
-    db1 = RobotController(
-        ip             = DB1_IP,
-        label          = "DB1",
-        home_point     = DB1_HOME_POINT,
-        pick_point     = DB1_PICK_POINT,
-        conveyor_point = DB1_CONVEYOR_POINT,
-        waste_point    = DB1_WASTE_POINT,
-    )
-
-    # ---Init DB2 ---
+    # --- Init DB2 ---
     db2 = RobotController(
         ip             = DB2_IP,
         label          = "DB2",
@@ -215,39 +190,29 @@ if __name__ == "__main__":
         mqtt_client.connect(BROKER_URL, 8883, 60)
         mqtt_client.loop_start()
 
-        # --- Startup DB1 ---
-        db1.start_up()
-        # --- Startup DB2 ---
         db2.start_up()
 
-        # --- MQTT Worker thread สำหรับ DB1 ---
-        t1 = threading.Thread(target=make_mqtt_worker(db1, "robot1"), daemon=True)
+        # --- MQTT Worker thread สำหรับ DB2 ---
         t2 = threading.Thread(target=make_mqtt_worker(db2, "robot2"), daemon=True)
-        t1.start()
         t2.start()
 
         # --- Main Control Loop ---
         print("\n" + "="*40)
-        print(f"  ควบคุม [{db1.label}]")
-        print("  '1' = Conveyor  '2' = Waste  'q' = ออก")
+        print(f"  ควบคุม [{db2.label}]")
+        print("  '1' = Conveyor 'q' = ออก")
         print("="*40)
 
         while True:
-            cmd = input(f"\n[{db1.label}] คำสั่ง → ").strip()
+            cmd = input(f"\n[{db2.label}] คำสั่ง → ").strip()
 
             if cmd == "1":
-                db1.pick_and_place(to_conveyor=True)
-                db2.pick_and_place(to_conveyor=True)  # สั่ง DB2 ทำงานพร้อมกัน (ถ้าเชื่อมต่อได้แล้ว)
-            elif cmd == "2":
-                db1.pick_and_place(to_conveyor=False)
-                db2.pick_and_place(to_conveyor=False)  # สั่ง DB2 ทำงานพร้อมกัน (ถ้าเชื่อมต่อได้แล้ว)
+                db2.pick_and_place(to_conveyor=True)
             elif cmd == "q":
                 break
             else:
                 print("⚠️  พิมพ์ '1', '2' หรือ 'q' เท่านั้น")
 
     finally:
-        db1.is_running = False
         db2.is_running = False
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
