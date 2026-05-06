@@ -38,7 +38,7 @@ MOCK_COMMAND_INTERVAL = float(os.getenv("DB2_MOCK_INTERVAL", "5.0"))
 
 # Waypoints  (Cartesian: X, Y, Z, R)
 HOME_POINT      = [189.79,   182.00,   115.86,   51.42]
-PICK_POINT      = [199.12,   315.43,  -41.63,  62.48] #fix Z to be on object surface, adjust x,y,r as needed
+PICK_POINT      = [208.47,   304.42,  -41.36, 304.42] #fix Z to be on object surface, adjust x,y,r as needed
 CONVEYOR_POINT  = [353.12,   -47.81,  150.33,   1.68] #set to be above conveyor
 
 # Robot API — module-level instances
