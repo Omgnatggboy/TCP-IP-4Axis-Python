@@ -37,9 +37,9 @@ DB2_MOCK_COMMAND      = False
 MOCK_COMMAND_INTERVAL = float(os.getenv("DB2_MOCK_INTERVAL", "5.0"))
 
 # Waypoints  (Cartesian: X, Y, Z, R)
-HOME_POINT      = [189.79,   182.00,   115.86,   51.42]
-PICK_POINT      = [208.47,   304.42,  -41.36, 304.42] #fix Z to be on object surface, adjust x,y,r as needed
-CONVEYOR_POINT  = [353.12,   -47.81,  150.33,   1.68] #set to be above conveyor
+HOME_POINT      = [189.79,   182.00,   115.86,   0]
+PICK_POINT      = [208.47,   304.42,  -41.36, 0] #fix Z to be on object surface, adjust x,y,r as needed
+CONVEYOR_POINT  = [353.12,   -47.81,  150.33,   0] #set to be above conveyor
 
 # Robot API — module-level instances
 dashboard = DobotApiDashboard(DB2_IP, 29999)
@@ -134,6 +134,7 @@ def wait_arrive(target: list, tolerance: float = 10.0):
 # Motion — joint move with arrival wait
 def movj_wait(point: list, description: str = ""):
     x, y, z, r = point
+    print(f"\n▶️ [{LABEL}] Moving to {description} → Point: {point}")
     move.MovJ(x, y, z, r)
     wait_arrive(point)
 
@@ -225,8 +226,7 @@ def pick_and_place_to_conveyor():
 
         print(f"\n▶️ [{LABEL}] START: Pick and Place → {dest}")
         
-        # Wait for arm to arrive at HOME before starting new task
-        wait_arrive(HOME_POINT, tolerance=15.0)
+        movj_wait(HOME_POINT, "Home  (Start)")
 
         # Step 1: Approach
         movj_wait(approach_pos,        "Above Pick Point (prepare)")

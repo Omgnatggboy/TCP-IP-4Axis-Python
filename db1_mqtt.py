@@ -21,7 +21,7 @@ TOPIC_IR        = "phitt-f/ir/data"         # publish    QoS 0  — ส่งส
 # Robot Configuration
 DB1_IP = "192.168.2.6"
 LABEL  = "DB1"
-PICK_HEIGHT_OFFSET = 1
+PICK_HEIGHT_OFFSET = 0
 SWEEP_HEIGHT_OFFSET = 5
 
 DO_PUSHER = 1
@@ -35,7 +35,7 @@ DI_IR_SENSOR   = 10
 SUCTION_ENGAGE_DELAY  = 0.5
 SUCTION_RELEASE_DELAY = 1.0
 SIM_INTERVAL          = 0.1  # 10 Hz  (was incorrectly set to 1 = 1 Hz)
-IR_POLL_INTERVAL      = 0.05
+IR_POLL_INTERVAL      = 0.08
 
 # Waypoints  (Cartesian: X, Y, Z, R)
 HOME_POINT     = [189.79,   182.00,   98.86,  51.42]
@@ -43,7 +43,7 @@ CONVEYOR_POINT = [354.30,   -52.16,  141.59,  67.61]
 WASTE_POINT    = [  2.60,  -294.58,  -20.21,   9.38]
 
 # --- Base offset & workspace limits for camera relative coords ---
-BASE_X, BASE_Y, BASE_Z, BASE_R = 150.01, 240.21, -60.45, 68.67
+BASE_X, BASE_Y, BASE_Z, BASE_R = 149.21, 237.31, -60.70, 68.67
 X_LIMITS = [150.01, 257.24]
 Y_LIMITS = [240.21, 377.44]
 
@@ -121,7 +121,6 @@ def ir_conveyor_pipeline():
     while is_running:
         try:
             raw    = dashboard.DI(DI_IR_SENSOR)
-            print(f"  [DEBUG] DI{DI_IR_SENSOR} raw → {raw}", flush=True)
             # Dobot dashboard DI response format: "ErrorID,Value,DI(N)\n"
             parts  = str(raw).strip().split(",")
             di_val = float(parts[1].strip().strip("{}")) if len(parts) >= 2 else 0
@@ -279,7 +278,8 @@ def calc_pick_point(cam_x: float, cam_y: float) -> dict:
     ฟังก์ชันนี้:
       1. บวก BASE offset เข้าไป
       2. Clamp X และ Y ให้อยู่ใน workspace limits
-      3. คืนค่า dict พร้อม pick_pos (ตำแหน่งหยิบ) และ approach_pos (ตำแหน่งเหนือวัตถุ)
+      3. Interpolate Z based on Y position (non-level surface)
+      4. คืนค่า dict พร้อม pick_pos (ตำแหน่งหยิบ) และ approach_pos (ตำแหน่งเหนือวัตถุ)
 
     Returns:
         {
@@ -290,12 +290,18 @@ def calc_pick_point(cam_x: float, cam_y: float) -> dict:
     """
     abs_x = BASE_X + cam_x
     abs_y = BASE_Y + cam_y
-    abs_z = BASE_Z + PICK_HEIGHT_OFFSET
     abs_r = BASE_R  # rotation ไม่เปลี่ยนตามกล้อง
 
     # Clamp ให้อยู่ใน workspace
     abs_x = max(X_LIMITS[0], min(abs_x, X_LIMITS[1]))
     abs_y = max(Y_LIMITS[0], min(abs_y, Y_LIMITS[1]))
+
+    # Interpolate Z based on Y position (non-level surface)
+    # Base: Y=237.31, Z=-60.7; End: Y=373.74, Z=-63.46
+    y_start, z_start = 237.31, -60.7
+    y_end, z_end = 373.74, -63.46
+    z_interpolated = z_start + (abs_y - y_start) * (z_end - z_start) / (y_end - y_start)
+    abs_z = z_interpolated + PICK_HEIGHT_OFFSET
 
     print(f"  →  Robot ({abs_x:.2f}, {abs_y:.2f}, {abs_z:.2f}, {abs_r:.2f})")
 
@@ -370,15 +376,77 @@ def pick_and_place(to_conveyor: bool, cam_x: float, cam_y: float):
     movl_wait(pts["approach_pos"])
     movj_wait(HOME_POINT, "Home  (Transit)")
 
-    # Step 3: Place
+    # Step 3: Drop off sequence
     movj_wait(target, f"Drop Point ({dest})")
-    suction_release()
+    if to_conveyor:
+        above = [CONVEYOR_POINT[0], CONVEYOR_POINT[1], CONVEYOR_POINT[2] - 8.5, CONVEYOR_POINT[3]]
+        movl_wait(above)
+        suction_release()
+        movl_wait(target)
+    else:
+        suction_release()
+
     movj_wait(HOME_POINT, "Home  (Task complete)")
 
-    # Step 4: Pusher — fires after suction off, non-blocking (3.5 s timer)
-    pusher_stroke()
+# ---------------------------------------------------------------------------
+# Pusher Configuration  (replaces old PUSHER_DURATION / _pusher_available)
+# ---------------------------------------------------------------------------
+DI_PUSHER_SENSOR   = 9      # DI9 — object present in pusher zone
+PUSHER_ON_DURATION = 4.5    # seconds — pusher extends
+PUSHER_RETRACT_DELAY = 5.5  # seconds — pusher retracts (within 5–6 s spec)
+PUSHER_POLL_INTERVAL = 0.05 # seconds — 20 Hz polling
 
+# ---------------------------------------------------------------------------
+# Pusher pipeline — dedicated daemon thread
+#
+# Runs continuously from startup, completely independent of the robot arm,
+# MQTT commands, and every other subsystem.
+#
+# Logic:
+#   DI9 = 0  (no object)  → keep waiting, poll at 20 Hz
+#   DI9 = 1  (object)     → DO_PUSHER ON for PUSHER_ON_DURATION seconds
+#                         → DO_PUSHER OFF for PUSHER_RETRACT_DELAY seconds
+#                         → re-poll DI9 — if still HIGH, cycle again
+# ---------------------------------------------------------------------------
+def pusher_pipeline():
+    print(f"  ➡️  [{LABEL}] Pusher pipeline started (poll={PUSHER_POLL_INTERVAL}s)", flush=True)
 
+    while is_running:
+        try:
+            raw9   = dashboard.DI(DI_PUSHER_SENSOR)
+            parts9 = str(raw9).strip().split(",")
+            di9    = float(parts9[1].strip().strip("{}")) if len(parts9) >= 2 else 0.0
+
+            raw10   = dashboard.DI(DI_IR_SENSOR)
+            parts10 = str(raw10).strip().split(",")
+            di10    = float(parts10[1].strip().strip("{}")) if len(parts10) >= 2 else 0.0
+
+            if di9 > 0.0 and di10 == 0.0:
+                # ── Object at pusher AND belt is clear ───────────────────────
+                print(f"  🟡 [{LABEL}] DI9 HIGH + DI10 LOW → Pusher ON  ({PUSHER_ON_DURATION}s)", flush=True)
+                dashboard.DO(DO_PUSHER, 1)
+                time.sleep(PUSHER_ON_DURATION)
+
+                dashboard.DO(DO_PUSHER, 0)
+                print(f"  ⬅️  [{LABEL}] Pusher OFF — retracting ({PUSHER_RETRACT_DELAY}s)", flush=True)
+                time.sleep(PUSHER_RETRACT_DELAY)
+
+                print(f"  ✅ [{LABEL}] Pusher fully retracted — resuming poll", flush=True)
+
+                continue
+
+            elif di9 > 0.0 and di10 > 0.0:
+                # ── Object at pusher BUT belt is blocked — hold off ──────────
+                print(f"  ⏸️  [{LABEL}] DI9 HIGH but DI10 HIGH (belt blocked) — waiting", flush=True)
+                time.sleep(PUSHER_POLL_INTERVAL)
+
+            else:
+                # ── Nothing at pusher ─────────────────────────────────────────
+                time.sleep(PUSHER_POLL_INTERVAL)
+
+        except Exception as e:
+            print(f"  ⚠️ [{LABEL}] Pusher pipeline error: {e}", flush=True)
+            time.sleep(PUSHER_POLL_INTERVAL)
 
 def edge_to_edge_sweep(cam_x: float, cam_y: float):
     pts = calc_sweep_point(cam_x, cam_y)
@@ -535,6 +603,9 @@ if __name__ == "__main__":
 
     # ── Robot feedback thread ──────────────────────────────────────────────────
     threading.Thread(target=get_feed, daemon=True, name="FeedThread").start()
+
+    # ── Pusher pipeline — starts immediately, runs for entire lifetime ──
+    threading.Thread(target=pusher_pipeline, daemon=True, name="Pusher").start()
 
     # ── MQTT ──────────────────────────────────────────────────────────────────
     client.connect(MQTT_HOST, MQTT_PORT, 60)
