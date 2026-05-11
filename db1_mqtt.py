@@ -4,6 +4,7 @@ import json
 import ssl
 import numpy as np
 import threading
+import math
 import paho.mqtt.client as mqtt
 from dobot_api import DobotApiDashboard, DobotApiMove, DobotApi, MyType
 
@@ -101,6 +102,25 @@ def conveyor_stop():
         conveyor_running = False
         print(f"  🔴 [{LABEL}] Conveyor OFF", flush=True)
 
+def calc_conveyor_speed():
+    """
+    ฟังก์ชันคำนวณความเร็วสายพานจริง (หน่วย: mm/s)
+    """
+    # --- ตั้งค่าฮาร์ดแวร์ของคุณตรงนี้ ---
+    MOTOR_RPM = 60.0          # ความเร็วรอบมอเตอร์ (รอบ/นาที) - ดูได้จากเนมเพลทมอเตอร์
+    ROLLER_DIAMETER_MM = 40.0 # ขนาดเส้นผ่านศูนย์กลางลูกกลิ้งขับสายพาน (มิลลิเมตร)
+    # -------------------------------
+    
+    # 1. หาความยาวเส้นรอบวงของลูกกลิ้ง = Pi * D
+    circumference = math.pi * ROLLER_DIAMETER_MM
+    
+    # 2. แปลงความเร็วจากรอบต่อนาที (RPM) เป็นรอบต่อวินาที (RPS)
+    rps = MOTOR_RPM / 60.0
+    
+    # 3. คำนวณความเร็ว (mm/s) = รอบต่อวินาที * เส้นรอบวง
+    speed_mms = rps * circumference
+    
+    return round(speed_mms, 2) # ปัดเศษทศนิยม 2 ตำแหน่ง
 # ---------------------------------------------------------------------------
 # IR + Conveyor pipeline
 # ---------------------------------------------------------------------------
@@ -159,7 +179,7 @@ def conveyor_status_pipeline():
             
             if current_state != last_state:
                 status = "working" if current_state else "idle"
-                speed = CONVEYOR_SPEED if current_state else 0
+                speed = calc_conveyor_speed() if current_state else 0
                 
                 payload = {"id": 1, "status": status, "speed": speed}
                 client.publish(TOPIC_CONVEYOR1, json.dumps(payload), qos=2, retain=True)
