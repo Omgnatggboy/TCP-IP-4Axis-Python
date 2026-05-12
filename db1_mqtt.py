@@ -17,7 +17,7 @@ TOPIC_CMD       = "phitt-f/db1/command"
 TOPIC_STATUS    = "phitt-f/db1/status"      
 TOPIC_DETECTION = "phitt-f/detection/data"  
 TOPIC_SIM       = "phitt-f/sim/db1"         
-TOPIC_IR        = "phitt-f/ir/data"         
+TOPIC_IR        = "phitt-f/ir/data"             
 TOPIC_CONVEYOR1 = "phitt-f/conveyor1/status"
 
 # Robot Configuration
@@ -26,8 +26,10 @@ LABEL  = "DB1"
 PICK_HEIGHT_OFFSET = 0
 SWEEP_HEIGHT_OFFSET = 5
 
-DO_PUSHER = 1
+DO_PUSHER      = 1
 DO_CONVEYOR    = 2
+DO_EMERG_LIGHT = 5
+DO_ALARM       = 3  # 🌟 เพิ่มขา DO สำหรับเสียงเตือน (แก้เลขตามที่ต่อฮาร์ดแวร์จริง)
 DO_SUCTION_ON  = 9
 DO_SUCTION_OFF = 10
 
@@ -69,7 +71,7 @@ _feed_event = threading.Event()
 conveyor_running = False   
 ir_blocked       = False   
 
-# 🌟 เพิ่ม Custom Exception สำหรับยกเลิกงานกะทันหัน
+# เพิ่ม Custom Exception สำหรับยกเลิกงานกะทันหัน
 class TaskHaltedException(Exception):
     pass
 
@@ -82,6 +84,14 @@ def start_up():
     time.sleep(3)            
     dashboard.SpeedFactor(50)
     print(f"✅ [{LABEL}] READY!")
+
+# 🌟 1. ฟังก์ชันสำหรับปิดเสียง (จะถูกเรียกอัตโนมัติเมื่อครบ 3 วินาที)
+def turn_off_alarm():
+    try:
+        with dashboard_lock:
+            dashboard.DO(DO_ALARM, 0)
+    except Exception as e:
+        pass
 
 # ---------------------------------------------------------------------------
 # Conveyor Control helpers
@@ -103,24 +113,13 @@ def conveyor_stop():
         print(f"  🔴 [{LABEL}] Conveyor OFF", flush=True)
 
 def calc_conveyor_speed():
-    """
-    ฟังก์ชันคำนวณความเร็วสายพานจริง (หน่วย: mm/s)
-    """
-    # --- ตั้งค่าฮาร์ดแวร์ของคุณตรงนี้ ---
-    MOTOR_RPM = 60.0          # ความเร็วรอบมอเตอร์ (รอบ/นาที) - ดูได้จากเนมเพลทมอเตอร์
-    ROLLER_DIAMETER_MM = 40.0 # ขนาดเส้นผ่านศูนย์กลางลูกกลิ้งขับสายพาน (มิลลิเมตร)
-    # -------------------------------
-    
-    # 1. หาความยาวเส้นรอบวงของลูกกลิ้ง = Pi * D
+    MOTOR_RPM = 60.0          
+    ROLLER_DIAMETER_MM = 40.0 
     circumference = math.pi * ROLLER_DIAMETER_MM
-    
-    # 2. แปลงความเร็วจากรอบต่อนาที (RPM) เป็นรอบต่อวินาที (RPS)
     rps = MOTOR_RPM / 60.0
-    
-    # 3. คำนวณความเร็ว (mm/s) = รอบต่อวินาที * เส้นรอบวง
     speed_mms = rps * circumference
-    
-    return round(speed_mms, 2) # ปัดเศษทศนิยม 2 ตำแหน่ง
+    return round(speed_mms, 2) 
+
 # ---------------------------------------------------------------------------
 # IR + Conveyor pipeline
 # ---------------------------------------------------------------------------
@@ -165,6 +164,46 @@ def ir_conveyor_pipeline():
             print(f"  ⚠️ [{LABEL}] IR pipeline error: {e}", flush=True)
 
         time.sleep(IR_POLL_INTERVAL)
+
+# ---------------------------------------------------------------------------
+# Safety Monitor — เช็คการกดปุ่ม E-Stop หรือ Error ของหุ่นยนต์
+# ---------------------------------------------------------------------------
+def safety_monitor_pipeline():
+    global is_halted, conveyor_running
+    print(f"  🛡️ [{LABEL}] Safety (E-Stop) monitor started", flush=True)
+    
+    while is_running:
+        try:
+            with dashboard_lock:
+                raw_mode = dashboard.RobotMode()
+            
+            parts = str(raw_mode).strip().split(",")
+            if len(parts) >= 2:
+                mode = int(parts[1].strip().strip("{}"))
+                
+                if mode == 9 and not is_halted:
+                    print(f"\n🚨 [{LABEL}] E-STOP OR ERROR DETECTED! → HALTING SYSTEM", flush=True)
+                    is_halted = True
+                    
+                    with dashboard_lock:
+                        dashboard.DO(DO_EMERG_LIGHT, 1)
+                        dashboard.DO(DO_ALARM, 1)       # 🌟 2. สั่งเปิดเสียงเตือนเมื่อกด E-Stop
+                        
+                        dashboard.DO(DO_CONVEYOR, 0)
+                        dashboard.DO(DO_SUCTION_ON, 0)
+                        dashboard.DO(DO_SUCTION_OFF, 0)
+                        dashboard.DO(DO_PUSHER, 0)
+                    
+                    # 🌟 ตั้งเวลาให้ปิดเสียงอัตโนมัติในอีก 3 วินาที
+                    threading.Timer(3.0, turn_off_alarm).start()
+                    
+                    conveyor_running = False
+                    publish_status("halted")
+                    
+        except Exception as e:
+            pass
+            
+        time.sleep(0.5)
 
 # ---------------------------------------------------------------------------
 # Conveyor Status Publisher
@@ -215,10 +254,8 @@ def wait_arrive(target: list, tolerance: float = 10.0):
     print(f"  ⏳ [{LABEL}] Waiting to arrive at Point: {target}")
     last_debug = 0.0
     while True:
-        # 🌟 เช็คบ่อยๆ ว่าโดนสั่งหยุดงานหรือยัง ถ้าโดนให้โยน Error เพื่อยกเลิก Thread ทันที
         if is_halted: raise TaskHaltedException()
         
-        # ใส่ timeout ให้ตื่นมาเช็ค is_halted ได้เร็วขึ้น (0.1 วินาที)
         _feed_event.wait(timeout=0.1)
         _feed_event.clear()
 
@@ -254,7 +291,6 @@ def suction_pick():
     with dashboard_lock:  
         dashboard.DO(DO_SUCTION_ON, 1)
     
-    # ซอยการรอเป็นสเต็ปย่อย เพื่อให้ตัดจบได้ทันทีตอนโดนเบรก
     steps = int(SUCTION_ENGAGE_DELAY / 0.1)
     for _ in range(steps):
         if is_halted: raise TaskHaltedException()
@@ -393,12 +429,17 @@ def pusher_pipeline():
             print(f"  ⚠️ [{LABEL}] Pusher pipeline error: {e}", flush=True)
             time.sleep(PUSHER_POLL_INTERVAL)
 
-def publish_status(status: str, cmd_id: int = None):
+def publish_status(status: str, cmd_id: int = None, color: str = None):
     payload = {"status": status}
+    
     if cmd_id is not None:
         payload["id"] = cmd_id
+        
+    if color is not None and color != "":
+        payload["color"] = color
+        
     client.publish(TOPIC_STATUS, json.dumps(payload), qos=2, retain=True)
-    print(f"  📢 [{LABEL}] Status → {status}", flush=True)
+    print(f"  📢 [{LABEL}] Status → {status} (ID: {cmd_id}, Color: {color})", flush=True)
 
 # ---------------------------------------------------------------------------
 # MQTT Callbacks
@@ -417,10 +458,12 @@ def on_message(client, userdata, msg):
 def handle_command(client, userdata, msg):
     global is_halted
     data   = json.loads(msg.payload.decode())
+    
     cmd_id = data.get("id", 0)
     action = data.get("action", "")
     cam_x  = float(data.get("x", 0))
     cam_y  = float(data.get("y", 0))
+    color  = data.get("color", "")
 
     if is_halted:
         print(f"  🚫 [{LABEL}] HALTED (person detected). Command ignored.")
@@ -429,22 +472,22 @@ def handle_command(client, userdata, msg):
     if action not in ("in", "out", "sweep"):
         return
 
-    publish_status("working", cmd_id)
+    publish_status("working", cmd_id, color)
 
     def run_task():
-        # 🌟 รองรับการดักจับ Error เมื่อโดนเบรกกลางคัน
         try:
             if action == "in": pick_and_place(True, cam_x, cam_y)
             elif action == "out": pick_and_place(False, cam_x, cam_y)
             elif action == "sweep": edge_to_edge_sweep(cam_x, cam_y)
-            publish_status("idle", cmd_id)
+            
+            publish_status("idle", cmd_id, color)
+            
         except TaskHaltedException:
             print(f"  🛑 [{LABEL}] TASK ABORTED: ยกเลิกคำสั่ง {action} กลางคัน เนื่องจากตรวจพบคน", flush=True)
 
     threading.Thread(target=run_task, daemon=True).start()
 
 def handle_detection(client, userdata, msg):
-    # 🌟 อย่าลืมเพิ่ม conveyor_running เข้ามาใน global ด้วย
     global is_halted, current_detect, conveyor_running 
     data = json.loads(msg.payload.decode())
     incoming_detect = int(data.get("detected", 0))
@@ -457,19 +500,21 @@ def handle_detection(client, userdata, msg):
             is_halted = True 
             
             with dashboard_lock:
-                # 🌟 1. บังคับตัดไฟอุปกรณ์ (DO) ทุกอย่าง "ก่อน" ที่จะกด Pause หุ่นยนต์
+                dashboard.DO(DO_EMERG_LIGHT, 1)  
+                dashboard.DO(DO_ALARM, 1)       # 🌟 3. สั่งเปิดเสียงเมื่อเซนเซอร์เจอคน
+                
                 dashboard.DO(DO_CONVEYOR, 0)
                 dashboard.DO(DO_SUCTION_ON, 0)
                 dashboard.DO(DO_SUCTION_OFF, 0)
                 dashboard.DO(DO_PUSHER, 0)     
                 
-                # 🌟 2. ค่อยสั่งเบรกหุ่นยนต์ และล้างคิว
                 dashboard.PauseRobot()         
                 dashboard.ClearError()
             
-            # บังคับอัปเดตสถานะสายพานในตัวแปร Python ให้ตรงกับฮาร์ดแวร์
-            conveyor_running = False
+            # 🌟 ตั้งเวลาปิดเสียง 3 วินาที
+            threading.Timer(3.0, turn_off_alarm).start()
             
+            conveyor_running = False
             publish_status("halted")
 
         elif current_detect == 0 and is_halted:
@@ -477,9 +522,10 @@ def handle_detection(client, userdata, msg):
             
             with dashboard_lock:
                 dashboard.ClearError()         
-                time.sleep(0.5)                
+                time.sleep(0.5) 
+                dashboard.DO(DO_EMERG_LIGHT, 0)  
+                dashboard.DO(DO_ALARM, 0)       # 🌟 4. สั่งปิดเสียงซ้ำเพื่อความปลอดภัยเมื่อระบบกลับมาปกติ
             
-            # เมื่อคนออกไปแล้ว สั่งให้แขนกลกลับไปตั้งหลักที่ HOME เสมอ เพื่อรอรับคำสั่งใหม่
             move.MovJ(HOME_POINT[0], HOME_POINT[1], HOME_POINT[2], HOME_POINT[3])
                 
             is_halted = False
@@ -515,6 +561,7 @@ if __name__ == "__main__":
     threading.Thread(target=conveyor_status_pipeline, daemon=True, name="ConveyorStatus").start()
     threading.Thread(target=pusher_pipeline, daemon=True, name="Pusher").start()
     threading.Thread(target=sim_worker, daemon=True).start()
+    threading.Thread(target=safety_monitor_pipeline, daemon=True, name="SafetyMonitor").start()
 
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     client.loop_start()
@@ -535,6 +582,12 @@ if __name__ == "__main__":
     finally:
         is_running = False
         conveyor_stop()        
+        
+        # 🌟 5. เพิ่มคำสั่งปิดไฟและปิดเสียง ก่อนที่จะออกจากโปรแกรม
+        with dashboard_lock:
+            dashboard.DO(DO_EMERG_LIGHT, 0)
+            dashboard.DO(DO_ALARM, 0)
+            
         client.loop_stop()
         client.disconnect()
         print("🔌 ปิดการทำงานเรียบร้อย")
