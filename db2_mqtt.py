@@ -21,7 +21,7 @@ TOPIC_IR        = "phitt-f/ir/data"
 TOPIC_CONVEYOR2 = "phitt-f/conveyor2/status" 
 
 # Robot Configuration
-DB2_IP = "192.168.2.7"
+DB2_IP = "192.168.1.6"
 LABEL  = "DB2"
 
 DO_PUSHER = 1
@@ -29,21 +29,21 @@ DO_CONVEYOR    = 2
 DO_SUCTION_ON  = 9
 DO_SUCTION_OFF = 10
 DO_EMERG_LIGHT = 5
-DO_ALARM       = 3   # 🌟 เพิ่มขา DO สำหรับเสียงเตือน
+DO_ALARM       = 6   # 🌟 เพิ่มขา DO สำหรับเสียงเตือน
 
 SUCTION_ENGAGE_DELAY  = 0.5
-SUCTION_RELEASE_DELAY = 0.3
+SUCTION_RELEASE_DELAY = 0.5
 SIM_INTERVAL          = 0.1  
 IR_POLL_INTERVAL      = 0.05
-DB2_MOCK_COMMAND      = True
+DB2_MOCK_COMMAND      = False
 MOCK_COMMAND_INTERVAL = float(os.getenv("DB2_MOCK_INTERVAL", "5.0"))
 
 CONVEYOR_SPEED = 200
 
 # Waypoints  (Cartesian: X, Y, Z, R)
 HOME_POINT      = [189.79,   182.00,   115.86,   0]
-PICK_POINT      = [208.47,   304.42,  -41.36, 0] 
-CONVEYOR_POINT  = [353.12,   -47.81,  150.33,   0] 
+PICK_POINT      = [202.15,   311.88,  -45.68, 0] 
+CONVEYOR_POINT  = [350.40,   15.79,  -12.94,   0] 
 
 # Robot API
 dashboard = DobotApiDashboard(DB2_IP, 29999)
@@ -112,7 +112,7 @@ def safety_monitor_pipeline():
                     
                     with dashboard_lock:
                         dashboard.DO(DO_EMERG_LIGHT, 1)
-                        dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
+                        #dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
                         
                         dashboard.DO(DO_CONVEYOR, 0)
                         dashboard.DO(DO_SUCTION_ON, 0)
@@ -326,8 +326,8 @@ def pick_and_place_to_conveyor():
         suction_release()
         movj_wait(HOME_POINT, "Home  (Task complete)")
 
-        pusher_stroke()  
-        wait_pusher_finished()  
+        #pusher_stroke()  
+        #wait_pusher_finished()  
         conveyer_start_stop()
     
     finally:
@@ -398,7 +398,7 @@ def handle_detection(client, userdata, msg):
             
             with dashboard_lock:
                 dashboard.DO(DO_EMERG_LIGHT, 1)  
-                dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
+                #dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
                 
                 dashboard.DO(DO_CONVEYOR, 0)
                 dashboard.DO(DO_SUCTION_ON, 0)
@@ -409,7 +409,7 @@ def handle_detection(client, userdata, msg):
                 dashboard.ClearError()
             
             # 🌟 ตั้งเวลาให้ปิดเสียงอัตโนมัติในอีก 3 วินาที
-            threading.Timer(3.0, turn_off_alarm).start()
+            #threading.Timer(3.0, turn_off_alarm).start()
             
             conveyor_running = False
             publish_status("halted")
@@ -465,8 +465,8 @@ if __name__ == "__main__":
     threading.Thread(target=sim_worker, daemon=True).start()
     threading.Thread(target=safety_monitor_pipeline, daemon=True, name="SafetyMonitor").start()
 
-    #client.connect(MQTT_HOST, MQTT_PORT, 60)
-    #client.loop_start()
+    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    client.loop_start()
 
     if DB2_MOCK_COMMAND:
         threading.Thread(target=mock_command_sender, daemon=True).start()

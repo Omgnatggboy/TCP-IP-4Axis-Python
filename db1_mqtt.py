@@ -29,7 +29,7 @@ SWEEP_HEIGHT_OFFSET = 5
 DO_PUSHER      = 1
 DO_CONVEYOR    = 2
 DO_EMERG_LIGHT = 5
-DO_ALARM       = 3  # 🌟 เพิ่มขา DO สำหรับเสียงเตือน (แก้เลขตามที่ต่อฮาร์ดแวร์จริง)
+DO_ALARM       = 6  # 🌟 เพิ่มขา DO สำหรับเสียงเตือน (แก้เลขตามที่ต่อฮาร์ดแวร์จริง)
 DO_SUCTION_ON  = 9
 DO_SUCTION_OFF = 10
 
@@ -42,7 +42,7 @@ IR_POLL_INTERVAL      = 0.08
 
 # Waypoints  (Cartesian: X, Y, Z, R)
 HOME_POINT     = [189.79,   182.00,   98.86,  51.42]
-CONVEYOR_POINT = [354.30,   -52.16,  141.59,  67.61]
+CONVEYOR_POINT = [354.30,   -52.16,  162.59,  67.61]
 WASTE_POINT    = [  2.60,  -294.58,  -20.21,   9.38]
 
 BASE_X, BASE_Y, BASE_Z, BASE_R = 149.21, 237.31, -60.70, 68.67
@@ -139,8 +139,13 @@ def ir_conveyor_pipeline():
             with dashboard_lock:  
                 raw = dashboard.DI(DI_IR_SENSOR)
                 
-            parts  = str(raw).strip().split(",")
-            di_val = float(parts[1].strip().strip("{}")) if len(parts) >= 2 else 0
+            raw_str = str(raw).strip()
+            if not raw_str:
+                di_val = 0.0
+            else:
+                parts = raw_str.split(",")
+                di_val_str = parts[1].strip().strip("{}") if len(parts) >= 2 else "0"
+                di_val = float(di_val_str) if di_val_str else 0.0
 
             should_conveyor_run = (not is_halted) and (di_val == 0.0)
 
@@ -187,7 +192,7 @@ def safety_monitor_pipeline():
                     
                     with dashboard_lock:
                         dashboard.DO(DO_EMERG_LIGHT, 1)
-                        dashboard.DO(DO_ALARM, 1)       # 🌟 2. สั่งเปิดเสียงเตือนเมื่อกด E-Stop
+                        #dashboard.DO(DO_ALARM, 1)       # 🌟 2. สั่งเปิดเสียงเตือนเมื่อกด E-Stop
                         
                         dashboard.DO(DO_CONVEYOR, 0)
                         dashboard.DO(DO_SUCTION_ON, 0)
@@ -195,7 +200,9 @@ def safety_monitor_pipeline():
                         dashboard.DO(DO_PUSHER, 0)
                     
                     # 🌟 ตั้งเวลาให้ปิดเสียงอัตโนมัติในอีก 3 วินาที
-                    threading.Timer(3.0, turn_off_alarm).start()
+                    # threading.Timer(3.0, turn_off_alarm).start()
+                    #time.sleep(3.0)  # รอให้ระบบหยุดนิ่งก่อนที่จะประกาศสถานะ halted
+                    #turn_off_alarm()  # ปิดเสียงเตือนหลังจากครบ 3 วินาที
                     
                     conveyor_running = False
                     publish_status("halted")
@@ -362,7 +369,7 @@ def pick_and_place(to_conveyor: bool, cam_x: float, cam_y: float):
     movj_wait(target, f"Drop Point ({dest})")
     
     if to_conveyor:
-        above = [CONVEYOR_POINT[0], CONVEYOR_POINT[1], CONVEYOR_POINT[2] - 8.5, CONVEYOR_POINT[3]]
+        above = [CONVEYOR_POINT[0], CONVEYOR_POINT[1], CONVEYOR_POINT[2] - 29.5, CONVEYOR_POINT[3]]
         movl_wait(above)
         suction_release()
         movl_wait(target)
@@ -403,10 +410,15 @@ def pusher_pipeline():
                 raw9   = dashboard.DI(DI_PUSHER_SENSOR)
                 raw10  = dashboard.DI(DI_IR_SENSOR)
 
-            parts9 = str(raw9).strip().split(",")
-            di9    = float(parts9[1].strip().strip("{}")) if len(parts9) >= 2 else 0.0
-            parts10 = str(raw10).strip().split(",")
-            di10    = float(parts10[1].strip().strip("{}")) if len(parts10) >= 2 else 0.0
+            raw9_text = str(raw9).strip()
+            parts9 = raw9_text.split(",") if raw9_text else []
+            di9_val = parts9[1].strip().strip("{}") if len(parts9) >= 2 else ""
+            di9 = float(di9_val) if di9_val else 0.0
+
+            raw10_text = str(raw10).strip()
+            parts10 = raw10_text.split(",") if raw10_text else []
+            di10_val = parts10[1].strip().strip("{}") if len(parts10) >= 2 else ""
+            di10 = float(di10_val) if di10_val else 0.0
 
             if di9 > 0.0 and di10 == 0.0 and not is_halted:
                 print(f"  🟡 [{LABEL}] DI9 HIGH + DI10 LOW → Pusher ON  ({PUSHER_ON_DURATION}s)", flush=True)
@@ -501,7 +513,7 @@ def handle_detection(client, userdata, msg):
             
             with dashboard_lock:
                 dashboard.DO(DO_EMERG_LIGHT, 1)  
-                dashboard.DO(DO_ALARM, 1)       # 🌟 3. สั่งเปิดเสียงเมื่อเซนเซอร์เจอคน
+                #dashboard.DO(DO_ALARM, 1)       # 🌟 3. สั่งเปิดเสียงเมื่อเซนเซอร์เจอคน
                 
                 dashboard.DO(DO_CONVEYOR, 0)
                 dashboard.DO(DO_SUCTION_ON, 0)
@@ -586,7 +598,7 @@ if __name__ == "__main__":
         # 🌟 5. เพิ่มคำสั่งปิดไฟและปิดเสียง ก่อนที่จะออกจากโปรแกรม
         with dashboard_lock:
             dashboard.DO(DO_EMERG_LIGHT, 0)
-            dashboard.DO(DO_ALARM, 0)
+            #dashboard.DO(DO_ALARM, 0)
             
         client.loop_stop()
         client.disconnect()
