@@ -112,7 +112,7 @@ def safety_monitor_pipeline():
                     
                     with dashboard_lock:
                         dashboard.DO(DO_EMERG_LIGHT, 1)
-                        #dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
+                        #dashboard.DO(DO_ALARM, 1)  
                         
                         dashboard.DO(DO_CONVEYOR, 0)
                         dashboard.DO(DO_SUCTION_ON, 0)
@@ -398,7 +398,7 @@ def handle_detection(client, userdata, msg):
             
             with dashboard_lock:
                 dashboard.DO(DO_EMERG_LIGHT, 1)  
-                #dashboard.DO(DO_ALARM, 1)       # 🌟 สั่งเปิดเสียงเตือน
+                #dashboard.DO(DO_ALARM, 1)      # 🌟 สั่งเปิดเสียงเตือน
                 
                 dashboard.DO(DO_CONVEYOR, 0)
                 dashboard.DO(DO_SUCTION_ON, 0)
@@ -410,7 +410,7 @@ def handle_detection(client, userdata, msg):
             
             # 🌟 ตั้งเวลาให้ปิดเสียงอัตโนมัติในอีก 3 วินาที
             #threading.Timer(3.0, turn_off_alarm).start()
-            
+              
             conveyor_running = False
             publish_status("halted")
 
