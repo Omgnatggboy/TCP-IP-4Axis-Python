@@ -45,7 +45,7 @@ HOME_POINT     = [189.79,   182.00,   98.86,  51.42]
 CONVEYOR_POINT = [354.30,   -52.16,  162.59,  67.61]
 WASTE_POINT    = [  2.60,  -294.58,  -20.21,   9.38]
 
-BASE_X, BASE_Y, BASE_Z, BASE_R = 149.21, 237.31, -60.70, 68.67
+BASE_X, BASE_Y, BASE_Z, BASE_R = 149.21, 237.31, -61.00, 68.67
 X_LIMITS = [150.01, 257.24]
 Y_LIMITS = [240.21, 377.44]
 
@@ -192,7 +192,7 @@ def safety_monitor_pipeline():
                     
                     with dashboard_lock:
                         dashboard.DO(DO_EMERG_LIGHT, 1)
-                        #dashboard.DO(DO_ALARM, 1)       # 🌟 2. สั่งเปิดเสียงเตือนเมื่อกด E-Stop
+                        dashboard.DO(DO_ALARM, 1)       # 🌟 2. สั่งเปิดเสียงเตือนเมื่อกด E-Stop
                         
                         dashboard.DO(DO_CONVEYOR, 0)
                         dashboard.DO(DO_SUCTION_ON, 0)
@@ -200,7 +200,7 @@ def safety_monitor_pipeline():
                         dashboard.DO(DO_PUSHER, 0)
                     
                     # 🌟 ตั้งเวลาให้ปิดเสียงอัตโนมัติในอีก 3 วินาที
-                    # threading.Timer(3.0, turn_off_alarm).start()
+                    threading.Timer(3.0, turn_off_alarm).start()
                     #time.sleep(3.0)  # รอให้ระบบหยุดนิ่งก่อนที่จะประกาศสถานะ halted
                     #turn_off_alarm()  # ปิดเสียงเตือนหลังจากครบ 3 วินาที
                     
@@ -394,8 +394,8 @@ def edge_to_edge_sweep(cam_x: float, cam_y: float):
 # Pusher Configuration & Pipeline
 # ---------------------------------------------------------------------------
 DI_PUSHER_SENSOR   = 9      
-PUSHER_ON_DURATION = 4.5    
-PUSHER_RETRACT_DELAY = 5.5  
+PUSHER_ON_DURATION = 5.5    
+PUSHER_RETRACT_DELAY = 6.5  
 PUSHER_POLL_INTERVAL = 0.05 
 
 def pusher_pipeline():
@@ -513,7 +513,7 @@ def handle_detection(client, userdata, msg):
             
             with dashboard_lock:
                 dashboard.DO(DO_EMERG_LIGHT, 1)  
-                #dashboard.DO(DO_ALARM, 1)       # 🌟 3. สั่งเปิดเสียงเมื่อเซนเซอร์เจอคน
+                dashboard.DO(DO_ALARM, 1)       # 🌟 3. สั่งเปิดเสียงเมื่อเซนเซอร์เจอคน
                 
                 dashboard.DO(DO_CONVEYOR, 0)
                 dashboard.DO(DO_SUCTION_ON, 0)
